@@ -1,27 +1,32 @@
 ---
 name: new-agent
-description: Create a new OpenClaw agent and connect it to a messaging channel (Telegram, Discord, Slack, Feishu, WhatsApp, Signal, Google Chat). Includes workspace scaffolding, channel configuration, and gateway binding.
+description: Create new OpenClaw agents and connect them to messaging channels (Telegram, Discord, Slack, Feishu, WhatsApp, Signal, Google Chat). Supports single and batch mode. Batch mode creates all agents at once with a single config write and gateway restart to avoid connection churn.
 ---
 
 # New Agent
 
-Add a new agent to your OpenClaw gateway with a dedicated workspace and messaging channel.
+Add one or more agents to your OpenClaw gateway with dedicated workspaces and messaging channels.
 
 ## When to Use
 
 - User wants to add a new AI agent or bot
 - User wants to connect a bot to a messaging platform
-- User provides an agent name and channel credentials
+- User wants to create a **team of agents** at once (batch mode)
 
-## Overview
+## Modes
 
-Adding a new agent involves four parts:
-1. **Workspace** — Create identity, personality, and memory files
-2. **Registration** — Register the agent with the CLI
-3. **Channel** — Add account credentials and routing binding to `openclaw.json`
-4. **Verify** — Restart gateway, verify, and pair
+| Mode | When | Script |
+|------|------|--------|
+| **Single** | Add one agent | `scripts/setup-agent.sh` |
+| **Batch** | Add multiple agents at once | `scripts/batch-setup.sh` |
 
-## Required Information
+> ⚠️ **Always prefer batch mode when creating 2+ agents.** Single-agent creation modifies `openclaw.json` each time, triggering a gateway hot reload per agent. For channels with persistent connections (Feishu WebSocket, Discord gateway), this causes repeated disconnects. Batch mode writes config **once** and restarts **once**.
+
+---
+
+## Single Agent Mode
+
+### Required Information
 
 | Field | Example |
 |-------|---------|
@@ -29,37 +34,15 @@ Adding a new agent involves four parts:
 | Channel | telegram / discord / slack / feishu / whatsapp / signal / googlechat |
 | Credentials | Bot token, app secret, or QR scan |
 
-## Step 1: Workspace
-
-Run the helper script:
+### Step 1: Workspace + Registration
 
 ```bash
 ./scripts/setup-agent.sh {name}
 ```
 
-This creates a workspace at `~/.openclaw/workspace-groups/{name}/` with:
-- `IDENTITY.md` — Name, role, emoji
-- `SOUL.md` — Personality and behavior
-- `AGENTS.md` — Startup instructions
-- `USER.md` — Owner info
+This creates workspace files and registers the agent with `openclaw agents add --non-interactive --workspace`.
 
-Or create the directory and files manually.
-
-## Step 2: Registration
-
-Register the agent with the CLI:
-
-```bash
-openclaw agents add {name}-agent \
-  --workspace ~/.openclaw/workspace-groups/{name} \
-  --non-interactive
-```
-
-> **Important:** Always pass `--non-interactive` and `--workspace` for automation. Without these, the CLI opens an interactive prompt.
-
-This adds the agent to `agents.list` in `openclaw.json`.
-
-## Step 3: Channel Configuration
+### Step 2: Channel Configuration
 
 Each channel needs **two things** in `openclaw.json`:
 1. An **account entry** under `channels.{channel}.accounts`
@@ -67,7 +50,7 @@ Each channel needs **two things** in `openclaw.json`:
 
 > ⚠️ The `bindings` array is at the **root level** of `openclaw.json`, NOT under `agents`.
 
-### 3a. Account Entry
+#### Account Entry Templates
 
 Add under `channels.{channel}.accounts.{name}`:
 
@@ -106,15 +89,13 @@ Add under `channels.{channel}.accounts.{name}`:
 ```
 For Lark (global), add `"domain": "lark"`.
 
-**WhatsApp / Signal** — No account entry needed; use interactive login:
+**WhatsApp / Signal** — Use interactive login:
 ```bash
 openclaw channels login --channel whatsapp --account {name}
 openclaw channels login --channel signal --account {name}
 ```
 
-### 3b. Binding (Top-Level)
-
-Add to the root `bindings` array:
+#### Binding (Top-Level)
 
 ```json
 {
@@ -126,32 +107,124 @@ Add to the root `bindings` array:
 }
 ```
 
-### 3c. Agent-to-Agent (Optional)
+#### Agent-to-Agent (Optional)
 
-To allow other agents to communicate with the new agent, add `"{name}-agent"` to `tools.agentToAgent.allow`.
+Add `"{name}-agent"` to `tools.agentToAgent.allow`.
 
-## Step 4: Verify & Pair
+### Step 3: Verify & Pair
 
 ```bash
-# Restart to apply config
 openclaw gateway restart
-
-# Check agent and bindings
 openclaw agents list --bindings
-
-# Probe channel health
 openclaw channels status --probe
 ```
 
-For DM-based channels (Telegram, Discord, etc.), the owner sends `/start` to the bot, then approves pairing:
+For DM channels, send `/start` to the bot, then:
+```bash
+openclaw pairing approve {channel} {CODE}
+```
+
+---
+
+## Batch Mode (Recommended for 2+ Agents)
+
+### Why Batch?
+
+When creating multiple agents one-by-one:
+- Each `openclaw agents add` modifies `openclaw.json` → triggers hot reload
+- Each channel account addition → another hot reload
+- **Feishu/Discord WebSocket disconnects and reconnects each time**
+- Messages sent during reload may be lost
+
+Batch mode: **all workspaces first, one config write, one restart.**
+
+### Step 1: Define Agents
+
+Create a JSON manifest file listing all agents:
+
+```json
+[
+  {
+    "name": "基金经理",
+    "id": "fund-manager",
+    "role": "管理投资研究团队",
+    "emoji": "📈",
+    "channel": "feishu",
+    "appId": "cli_xxx",
+    "appSecret": "xxx"
+  },
+  {
+    "name": "科技研究员",
+    "id": "tech-researcher",
+    "role": "科技行业投资研究",
+    "emoji": "💻",
+    "channel": "feishu",
+    "appId": "cli_yyy",
+    "appSecret": "yyy"
+  }
+]
+```
+
+Fields:
+- `name` — Display name (used in IDENTITY.md)
+- `id` — Agent ID slug (lowercase, used for agent-id, account-id, workspace dir)
+- `role` — Role description (used in SOUL.md)
+- `emoji` — Agent emoji
+- `channel` — Channel type
+- For Telegram: add `"botToken": "..."`
+- For Feishu: add `"appId": "..."` and `"appSecret": "..."`
+- For Discord: add `"token": "..."`
+- For Slack: add `"appToken": "..."` and `"botToken": "..."`
+
+### Step 2: Run Batch Setup
+
+```bash
+./scripts/batch-setup.sh agents.json
+```
+
+This will:
+1. ✅ Create all workspaces (IDENTITY.md, SOUL.md, AGENTS.md, USER.md)
+2. ✅ Register all agents (`openclaw agents add --non-interactive`)
+3. ✅ Add all channel accounts to `openclaw.json` in **one write**
+4. ✅ Add all bindings in **one write**
+5. ✅ Add all agents to `agentToAgent.allow` in **one write**
+6. ✅ Restart gateway **once**
+
+### Step 3: Pair
+
+For each agent, send a message in the channel, then approve:
 
 ```bash
 openclaw pairing approve {channel} {CODE}
 ```
 
+---
+
+## Shared Channel (Multiple Agents, One Bot)
+
+You can route multiple agents through a **single bot** using group-based bindings:
+
+```json
+{
+  "agentId": "tech-researcher",
+  "match": {
+    "channel": "feishu",
+    "accountId": "shared-bot",
+    "groupId": "oc_xxxxx"
+  }
+}
+```
+
+- DM → routes to default agent for that account
+- Group messages → route based on `groupId` match
+- One bot, multiple brains
+
+---
+
 ## Notes
 
 - All agents share existing model credentials — no extra API keys needed
 - One channel is enough to bring an agent online
-- Add more channels later by repeating Step 3
+- Add more channels later by repeating the single-agent steps
 - The default model comes from `agents.defaults.model.primary` in your config
+- **Batch mode prevents hot-reload churn** — always use it for 2+ agents
